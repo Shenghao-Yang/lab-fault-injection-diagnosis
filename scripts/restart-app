@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+source "$(dirname "$0")/lab-common"
+cd "$lab_repository_root"
+
+docker compose up --detach --build --wait app
+printf 'Checkout rebuilt and restarted.\n'

@@ -1,0 +1,26 @@
+{
+  "name": "Bounded Dependency Failures with Toxiproxy Lab",
+  "build": {
+    "dockerfile": "Dockerfile"
+  },
+  "features": {
+    "ghcr.io/devcontainers/features/docker-outside-of-docker:1": {
+      "moby": false
+    }
+  },
+  "forwardPorts": [3000, 8474],
+  "portsAttributes": {
+    "3000": {
+      "label": "Checkout API"
+    },
+    "8474": {
+      "label": "Toxiproxy administration API"
+    }
+  },
+  "remoteEnv": {
+    "BASE_URL": "http://host.docker.internal:3000",
+    "TOXIPROXY_URL": "http://host.docker.internal:8474"
+  },
+  "postCreateCommand": "npm ci",
+  "postStartCommand": "./scripts/start-lab"
+}

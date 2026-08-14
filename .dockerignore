@@ -1,0 +1,6 @@
+.git
+.devcontainer
+lab08
+scripts
+node_modules
+npm-debug.log*

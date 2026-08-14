@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+source "$(dirname "$0")/lab-common"
+cd "$lab_repository_root"
+
+docker compose up --detach --build --wait
+
+printf '\nLab 8 is ready:\n'
+printf '  Checkout:  http://localhost:3000/checkout\n'
+printf '  Toxiproxy: http://localhost:8474\n'

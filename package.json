@@ -1,0 +1,13 @@
+{
+  "name": "lab-fault-injection-diagnosis",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Small checkout and pricing services for practicing bounded dependency failures with Toxiproxy",
+  "scripts": {
+    "start:app": "node src/app.js",
+    "start:pricing": "node src/pricing.js"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}

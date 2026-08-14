@@ -1,0 +1,72 @@
+name: lab08
+
+services:
+  pricing:
+    build:
+      context: .
+    init: true
+    restart: unless-stopped
+    command: [npm, run, start:pricing]
+    environment:
+      PORT: "4000"
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - fetch('http://127.0.0.1:4000/health').then(r => { if (!r.ok) process.exit(1) }).catch(() => process.exit(1))
+      interval: 1s
+      timeout: 2s
+      retries: 30
+      start_period: 2s
+
+  toxiproxy:
+    build:
+      context: toxiproxy
+    restart: unless-stopped
+    command:
+      - -host=0.0.0.0
+      - -config=/config/toxiproxy.json
+    depends_on:
+      pricing:
+        condition: service_healthy
+    ports:
+      - "8474:8474"
+    healthcheck:
+      test:
+        - CMD
+        - /toxiproxy-cli
+        - --host
+        - http://127.0.0.1:8474
+        - list
+      interval: 1s
+      timeout: 2s
+      retries: 30
+      start_period: 2s
+
+  app:
+    build:
+      context: .
+    init: true
+    restart: unless-stopped
+    command: [npm, run, start:app]
+    environment:
+      PORT: "3000"
+      PRICING_URL: http://toxiproxy:8475/price
+    depends_on:
+      pricing:
+        condition: service_healthy
+      toxiproxy:
+        condition: service_healthy
+    ports:
+      - "3000:3000"
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - fetch('http://127.0.0.1:3000/health').then(r => { if (!r.ok) process.exit(1) }).catch(() => process.exit(1))
+      interval: 1s
+      timeout: 2s
+      retries: 30
+      start_period: 2s

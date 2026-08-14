@@ -1,0 +1,45 @@
+#!/usr/bin/env bash
+
+lab_repository_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+
+resolve_lab_host() {
+  local port=$1
+  local path=${2:-/health}
+  local candidate
+  local -a candidates=(127.0.0.1)
+
+  if [[ -n "${LAB_HOST:-}" ]]; then
+    candidates=("$LAB_HOST" "${candidates[@]}")
+  fi
+  if getent hosts host.docker.internal >/dev/null 2>&1; then
+    candidates+=(host.docker.internal)
+  fi
+
+  for candidate in "${candidates[@]}"; do
+    if curl --noproxy '*' --fail --silent --max-time 1 \
+      "http://${candidate}:${port}${path}" >/dev/null 2>&1; then
+      printf '%s' "$candidate"
+      return 0
+    fi
+  done
+
+  return 1
+}
+
+wait_for_lab_host() {
+  local port=$1
+  local path=${2:-/health}
+  local timeout=${3:-30}
+  local deadline=$((SECONDS + timeout))
+  local host
+
+  while ((SECONDS < deadline)); do
+    if host=$(resolve_lab_host "$port" "$path"); then
+      printf '%s' "$host"
+      return 0
+    fi
+    sleep 0.5
+  done
+
+  return 1
+}
