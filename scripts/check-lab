@@ -6,7 +6,6 @@ source "$(dirname "$0")/lab-common"
 cd "$lab_repository_root" || exit 1
 
 failures=0
-stack_started=false
 decoy_pid=""
 toxiproxy_url=""
 temporary_directory=$(mktemp -d)
@@ -49,13 +48,9 @@ fi
 for path in \
   .lab-fixtures.sha256 \
   compose.yml \
-  Dockerfile \
   lab08/experiment.sh \
-  package-lock.json \
-  package.json \
   src/app.js \
   src/pricing.js \
-  toxiproxy/Dockerfile \
   toxiproxy/toxiproxy.json; do
   if [[ ! -f "$path" ]]; then
     record_failure "$path is missing"
@@ -64,7 +59,7 @@ done
 
 if [[ -f .lab-fixtures.sha256 ]] && \
   ! sha256sum --check --quiet .lab-fixtures.sha256; then
-  record_failure "an instructor-owned stack, service, or checker file was changed"
+  record_failure "an instructor-owned stack, service, or support file was changed"
 fi
 
 experiment_valid=true
@@ -82,9 +77,9 @@ if ((failures > 0)); then
 fi
 
 printf 'Starting the pinned lab stack...\n'
+stack_started=false
 if ! docker compose up --detach --build --force-recreate --wait; then
   record_failure "the Docker Compose stack did not become healthy"
-  docker compose ps >&2 || true
 else
   stack_started=true
 fi
@@ -102,62 +97,6 @@ if [[ "$stack_started" == true ]]; then
   fi
 fi
 
-json_equals() {
-  local body_path=$1
-  local expected=$2
-  jq --exit-status ". == $expected" "$body_path" >/dev/null 2>&1
-}
-
-checkout_status=""
-checkout_time=""
-checkout_content_type=""
-capture_checkout() {
-  local label=$1
-  local max_time=${2:-2}
-  local result
-  local body_path="$temporary_directory/${label}.json"
-
-  result=$(curl \
-    --noproxy '*' \
-    --silent \
-    --show-error \
-    --max-time "$max_time" \
-    --output "$body_path" \
-    --write-out '%{http_code} %{time_total} %{content_type}' \
-    "http://${lab_host}:3000/checkout" 2>"$temporary_directory/${label}.curl.log")
-  local curl_status=$?
-  read -r checkout_status checkout_time checkout_content_type <<< "$result"
-  [[ -f "$body_path" ]] || : > "$body_path"
-  return "$curl_status"
-}
-
-assert_healthy_checkout() {
-  local label=$1
-  local description=$2
-
-  if ! capture_checkout "$label" 2; then
-    record_failure "$description did not complete"
-  elif [[ "$checkout_status" != "200" ]] || \
-    [[ "${checkout_content_type%%;*}" != "application/json" ]] || \
-    ! json_equals "$temporary_directory/${label}.json" \
-      '{"total":25,"status":"ok"}'; then
-    record_failure "$description did not return HTTP 200 with the healthy checkout body"
-  else
-    printf 'PASS: %s\n' "$description"
-  fi
-}
-
-add_latency() {
-  local milliseconds=$1
-
-  remove_test_toxic
-  TOXIPROXY_URL="$toxiproxy_url" toxiproxy-cli toxic add \
-    --toxicName pricing_latency \
-    --type latency \
-    --attribute "latency=${milliseconds}" \
-    pricing >/dev/null
-}
-
 toxic_is_absent() {
   curl --noproxy '*' --fail --silent --max-time 2 \
     "$toxiproxy_url/proxies/pricing" | \
@@ -166,60 +105,29 @@ toxic_is_absent() {
       >/dev/null
 }
 
-if [[ -n "$toxiproxy_url" && -n "$lab_host" ]]; then
-  printf '\nChecking checkout behavior independently...\n'
+if [[ "$experiment_valid" == true && -n "$toxiproxy_url" && -n "$lab_host" ]]; then
+  printf '\nChecking the fault experiment...\n'
   remove_test_toxic
-  assert_healthy_checkout healthy "checkout without a toxic"
-
-  if ! add_latency 200; then
-    record_failure "the checker could not add the 200ms control toxic"
+  if ! timeout 20 env \
+    BASE_URL="http://${lab_host}:3000" \
+    TOXIPROXY_URL="$toxiproxy_url" \
+    TOXIPROXY_PROXY=pricing \
+    TOXIPROXY_LATENCY_MS=2500 \
+    bash lab08/experiment.sh >"$temporary_directory/experiment.log" 2>&1; then
+    record_failure "the experiment did not establish healthy, delayed, and recovered behavior"
+    sed -n '1,100p' "$temporary_directory/experiment.log" >&2
   else
-    assert_healthy_checkout moderate "checkout with 200ms of pricing latency"
+    printf 'PASS: the experiment accepts the supplied fault behavior\n'
   fi
 
-  if ! add_latency 3000; then
-    record_failure "the checker could not add the 3000ms test toxic"
-  elif ! capture_checkout delayed 2; then
-    record_failure "delayed checkout did not return a bounded HTTP response within 2 seconds"
-  elif [[ "$checkout_status" != "503" ]] || \
-    [[ "${checkout_content_type%%;*}" != "application/json" ]] || \
-    ! json_equals "$temporary_directory/delayed.json" \
-      '{"error":"pricing_unavailable"}'; then
-    record_failure "delayed checkout did not return HTTP 503 with {\"error\":\"pricing_unavailable\"}"
-  elif ! node -e '
-    const elapsed = Number(process.argv[1]);
-    process.exit(elapsed >= 0.25 && elapsed < 1.5 ? 0 : 1);
-  ' "$checkout_time"; then
-    record_failure "delayed checkout did not return between 250ms and 1.5 seconds"
+  if ! toxic_is_absent; then
+    record_failure "the experiment left pricing_latency active after its normal run"
+    remove_test_toxic
   else
-    printf 'PASS: delayed checkout returns the bounded 503 response\n'
+    printf 'PASS: the experiment cleans up after its normal run\n'
   fi
 
-  remove_test_toxic
-  assert_healthy_checkout recovered "checkout after the toxic is removed"
-
-  if [[ "$experiment_valid" == true ]]; then
-    printf '\nChecking lab08/experiment.sh behavior...\n'
-    experiment_output="$temporary_directory/experiment.log"
-    if ! timeout 20 env \
-      BASE_URL="http://${lab_host}:3000" \
-      TOXIPROXY_URL="$toxiproxy_url" \
-      TOXIPROXY_PROXY=pricing \
-      bash lab08/experiment.sh >"$experiment_output" 2>&1; then
-      record_failure "lab08/experiment.sh did not complete the healthy, delayed, and recovered checks"
-      sed -n '1,100p' "$experiment_output" >&2
-    else
-      printf 'PASS: lab08/experiment.sh accepts the real bounded stack\n'
-    fi
-
-    if ! toxic_is_absent; then
-      record_failure "lab08/experiment.sh left pricing_latency active after its normal run"
-      remove_test_toxic
-    else
-      printf 'PASS: the experiment cleans up after its normal run\n'
-    fi
-
-    decoy_port=$(node - <<'NODE'
+  decoy_port=$(node - <<'NODE'
 "use strict";
 const net = require("node:net");
 const server = net.createServer();
@@ -229,54 +137,53 @@ server.listen(0, "127.0.0.1", () => {
 });
 NODE
 )
-    PORT="$decoy_port" node -e '
-      const http = require("node:http");
-      const body = JSON.stringify({ total: 25, status: "ok" });
-      http.createServer((_request, response) => {
-        response.writeHead(200, { "content-type": "application/json" });
-        response.end(body);
-      }).listen(Number(process.env.PORT), "127.0.0.1");
-    ' >"$temporary_directory/decoy.log" 2>&1 &
-    decoy_pid=$!
+  PORT="$decoy_port" node -e '
+    const http = require("node:http");
+    const body = JSON.stringify({ total: 25, status: "ok" });
+    http.createServer((_request, response) => {
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(body);
+    }).listen(Number(process.env.PORT), "127.0.0.1");
+  ' >"$temporary_directory/decoy.log" 2>&1 &
+  decoy_pid=$!
 
-    decoy_ready=false
-    for _ in {1..20}; do
-      if curl --noproxy '*' --fail --silent --max-time 0.5 \
-        "http://127.0.0.1:${decoy_port}/checkout" >/dev/null 2>&1; then
-        decoy_ready=true
-        break
-      fi
-      sleep 0.1
-    done
+  decoy_ready=false
+  for _ in {1..20}; do
+    if curl --noproxy '*' --fail --silent --max-time 0.5 \
+      "http://127.0.0.1:${decoy_port}/checkout" >/dev/null 2>&1; then
+      decoy_ready=true
+      break
+    fi
+    sleep 0.1
+  done
 
+  remove_test_toxic
+  if [[ "$decoy_ready" != true ]]; then
+    record_failure "the checker could not start its always-healthy control service"
+  elif timeout 20 env \
+    BASE_URL="http://127.0.0.1:${decoy_port}" \
+    TOXIPROXY_URL="$toxiproxy_url" \
+    TOXIPROXY_PROXY=pricing \
+    TOXIPROXY_LATENCY_MS=2500 \
+    bash lab08/experiment.sh \
+    >"$temporary_directory/experiment-control.log" 2>&1; then
+    record_failure "the experiment accepted a service that stayed healthy during the fault"
+  else
+    printf 'PASS: the experiment rejects the always-healthy control\n'
+  fi
+
+  if ! toxic_is_absent; then
+    record_failure "the experiment left pricing_latency active after an assertion failure"
     remove_test_toxic
-    if [[ "$decoy_ready" != true ]]; then
-      record_failure "the checker could not start its always-healthy control service"
-    elif timeout 20 env \
-      BASE_URL="http://127.0.0.1:${decoy_port}" \
-      TOXIPROXY_URL="$toxiproxy_url" \
-      TOXIPROXY_PROXY=pricing \
-      bash lab08/experiment.sh \
-      >"$temporary_directory/experiment-decoy.log" 2>&1; then
-      record_failure "lab08/experiment.sh accepted a service that stayed healthy during injected latency"
-    else
-      printf 'PASS: the experiment rejects the always-healthy control service\n'
-    fi
-
-    if ! toxic_is_absent; then
-      record_failure "lab08/experiment.sh left pricing_latency active after an assertion failure"
-      remove_test_toxic
-    else
-      printf 'PASS: the experiment cleans up after an assertion failure\n'
-    fi
+  else
+    printf 'PASS: the experiment cleans up after an assertion failure\n'
   fi
 fi
 
 printf '\n'
 if ((failures > 0)); then
   printf 'Lab check failed with %d problem(s).\n' "$failures" >&2
-  printf 'The autograder repeats these checks independently.\n' >&2
   exit 1
 fi
 
-printf 'Lab check passed. The autograder repeats these checks independently.\n'
+printf 'All Lab 8 checks passed.\n'

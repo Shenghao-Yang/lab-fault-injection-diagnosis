@@ -3,13 +3,16 @@
 set -u -o pipefail
 
 BASE_URL=${BASE_URL:-http://localhost:3000}
+TOXIPROXY_URL=${TOXIPROXY_URL:-http://localhost:8474}
 TOXIPROXY_PROXY=${TOXIPROXY_PROXY:-pricing}
+TOXIPROXY_LATENCY_MS=${TOXIPROXY_LATENCY_MS:-3000}
 
 temporary_directory=$(mktemp -d)
 cleanup_started=false
 
 inject_latency() {
-  # TODO: add the pricing_latency downstream latency toxic here.
+  # TODO: add the pricing_latency downstream latency toxic using
+  # TOXIPROXY_PROXY and TOXIPROXY_LATENCY_MS.
   :
 }
 
@@ -43,6 +46,27 @@ body_matches() {
     >/dev/null 2>&1
 }
 
+toxic_matches_experiment() {
+  curl \
+    --noproxy '*' \
+    --fail \
+    --silent \
+    --show-error \
+    --max-time 2 \
+    "$TOXIPROXY_URL/proxies/$TOXIPROXY_PROXY" | \
+    jq \
+      --exit-status \
+      --arg name pricing_latency \
+      --argjson latency "$TOXIPROXY_LATENCY_MS" \
+      '[.toxics[]? | select(
+        .name == $name and
+        .type == "latency" and
+        .stream == "downstream" and
+        .attributes.latency == $latency
+      )] | length == 1' \
+      >/dev/null
+}
+
 request_checkout() {
   local label=$1
   local body_path="$temporary_directory/${label}.json"
@@ -72,6 +96,7 @@ body_matches "$temporary_directory/baseline.json" \
   '{"total":25,"status":"ok"}' || fail "baseline checkout body was unexpected"
 
 inject_latency || fail "could not add pricing_latency"
+toxic_matches_experiment || fail "pricing_latency does not match the experiment"
 
 request_checkout delayed
 [[ "$checkout_status" == "503" ]] || fail "delayed checkout did not return HTTP 503"
@@ -79,8 +104,10 @@ request_checkout delayed
   fail "delayed checkout did not return JSON"
 body_matches "$temporary_directory/delayed.json" \
   '{"error":"pricing_unavailable"}' || fail "delayed checkout body was unexpected"
-node -e 'process.exit(Number(process.argv[1]) < 1.5 ? 0 : 1)' \
-  "$checkout_time" || fail "delayed checkout took 1.5 seconds or longer"
+node -e '
+  const elapsed = Number(process.argv[1]);
+  process.exit(elapsed >= 0.25 && elapsed < 1.5 ? 0 : 1);
+' "$checkout_time" || fail "delayed checkout did not return between 250ms and 1.5 seconds"
 
 remove_latency || fail "could not remove pricing_latency"
 

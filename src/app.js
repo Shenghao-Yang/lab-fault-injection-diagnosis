@@ -21,7 +21,7 @@ function sendJson(response, statusCode, value) {
 async function checkout(response) {
   try {
     const pricingResponse = await fetch(pricingUrl, {
-      // TODO: bound this outgoing request with the lab's 500ms deadline.
+      signal: AbortSignal.timeout(500),
     });
     if (!pricingResponse.ok) {
       throw new Error(`pricing returned HTTP ${pricingResponse.status}`);
