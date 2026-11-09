@@ -6,7 +6,7 @@ resolve_lab_host() {
   local port=$1
   local path=${2:-/health}
   local candidate
-  local -a candidates=(127.0.0.1)
+  local -a candidates=(127.0.0.1, $(ip route | awk '/^default/ {print $3; exit}'))
 
   if [[ -n "${LAB_HOST:-}" ]]; then
     candidates=("$LAB_HOST" "${candidates[@]}")
