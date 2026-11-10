@@ -11,14 +11,18 @@ temporary_directory=$(mktemp -d)
 cleanup_started=false
 
 inject_latency() {
-  # TODO: add the pricing_latency downstream latency toxic using
-  # TOXIPROXY_PROXY and TOXIPROXY_LATENCY_MS.
-  :
+  toxiproxy-cli toxic add \
+    --toxicName pricing_latency \
+    --type latency \
+    --attribute "latency=$TOXIPROXY_LATENCY_MS" \
+    --downstream \
+    "$TOXIPROXY_PROXY"
 }
 
 remove_latency() {
-  # TODO: remove the pricing_latency toxic here.
-  :
+  toxiproxy-cli toxic remove \
+    --toxicName pricing_latency \
+    "$TOXIPROXY_PROXY"
 }
 
 cleanup() {
